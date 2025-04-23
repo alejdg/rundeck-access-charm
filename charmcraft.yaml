@@ -9,20 +9,10 @@ title: Rundeck Access
 summary:  A subordinate charm that sets up connects the an application to Rundeck.
 
 
-# (Required)
 description: |
   The [rundeck-access](https://charmhub.io/rundeck-access) is a subordinate charm that configures the related applications to be accessed by a Rundeck instance.
 
-  {# A single sentence that says what the charm is, concisely and memorably.
 
-  A paragraph of one to three short sentences, that describe what the charm does.
-
-  A third paragraph that explains what need the charm meets.
-
-  Finally, a paragraph that describes whom the charm is useful for.
- #}
-
-# (Required for 'charm' type)
 bases:
   - build-on:
     - name: ubuntu
@@ -42,11 +32,6 @@ requires:
     scope: container
 
 
-# (Optional) Configuration options for the charm
-# This config section defines charm config options, and populates the Configure
-# tab on Charmhub.
-# More information on this section at https://juju.is/docs/sdk/charmcraft-yaml#heading--config
-# General configuration documentation: https://juju.is/docs/sdk/config
 config:
   options:
     ssh-key:

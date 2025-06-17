@@ -46,7 +46,7 @@ class RundeckAccessCharm(CharmBase):
             logger.exception("Failed to configure user")
             self.unit.status = BlockedStatus(f"Failed to configure: {e}")
 
-    def _validate_ssh_key(self, key):
+    def _validate_ssh_key(self, key: str) -> bool:
         """Validate the SSH key format."""
         logger.debug("Validating SSH key format")
         key_pattern = re.compile(r"^(ssh-(rsa|dss|ecdsa|ed25519) [A-Za-z0-9+/=]+( [^\n\r]+)?)$")
@@ -76,8 +76,12 @@ class RundeckAccessCharm(CharmBase):
         logger.info("SSH key configured for rundeck user")
 
         # Configure sudoers file
+        temp_file = "/tmp/sudoers-rundeck"
         sudoers_file = "/etc/sudoers.d/rundeck"
         if sudoer:
+            if not self._verify_sudoers(sudoer):
+                self.unit.status = BlockedStatus("Sudoers file syntax error")
+                return
             logger.debug("Configuring sudoers file")
             with open(sudoers_file, "w") as f:
                 f.write(f"rundeck {sudoer}\n")
@@ -87,6 +91,20 @@ class RundeckAccessCharm(CharmBase):
             os.remove(sudoers_file)
             logger.info("Sudoers file removed")
 
+    def _verify_sudoers(self, sudoer) -> bool:
+        """Verify the sudoers file syntax."""
+        temp_file = "/tmp/sudoers-rundeck"
+        logger.debug("Verifying sudoers file syntax")
+        with open(temp_file, "w") as f:
+            f.write(f"rundeck {sudoer}\n")
+        result = os.system(f"visudo --check -f {temp_file}")
+        os.remove(temp_file)
+        logger.debug("Sudoers file syntax verification completed")
+        if result != 0:
+            logger.error("Sudoers file syntax error")
+            return False
+        logger.debug("Sudoers file syntax is valid")
+        return True
 
 if __name__ == "__main__":  # pragma: nocover
     main(RundeckAccessCharm)

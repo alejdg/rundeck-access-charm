@@ -7,6 +7,7 @@
 import logging
 import os
 import re
+import subprocess
 
 from ops.charm import CharmBase, ConfigChangedEvent, StartEvent
 from ops.framework import Framework
@@ -31,7 +32,7 @@ class RundeckAccessCharm(CharmBase):
     def _on_config_changed(self, event: ConfigChangedEvent):
         logger.info("Configuration change detected")
         ssh_key = self.config.get("ssh-key")
-        sudoer = self.config.get("sudoer")
+        allowed_commands = self.config.get("allowed-commands", [])
 
         if not ssh_key or not self._validate_ssh_key(ssh_key):
             logger.error("Invalid or missing SSH key")
@@ -39,11 +40,11 @@ class RundeckAccessCharm(CharmBase):
             return
 
         try:
-            self._configure_rundeck_user(ssh_key, sudoer)
+            self._configure_rundeck_user(ssh_key, allowed_commands)
             self.unit.status = ActiveStatus("Configuration applied successfully")
             logger.info("Configuration applied successfully")
         except Exception as e:
-            logger.exception("Failed to configure user")
+            logger.error("Failed to configure user during configuration step")
             self.unit.status = BlockedStatus(f"Failed to configure: {e}")
 
     def _validate_ssh_key(self, key: str) -> bool:
@@ -57,11 +58,20 @@ class RundeckAccessCharm(CharmBase):
             logger.error("SSH key format is invalid")
         return valid
 
-    def _configure_rundeck_user(self, ssh_key, sudoer):
-        """Configure the rundeck user, its SSH key, and sudo access."""
+    def _configure_rundeck_user(self, ssh_key, allowed_commands):
+        """Configure the rundeck user, its SSH key, and sudo access.
+
+        Args:
+            ssh_key (str): The SSH public key to be added to the rundeck user's authorized_keys
+                           file.
+            allowed_commands (list): A list of strings representing commands that the rundeck user
+                                     is allowed to execute via sudo.
+                                     Each command should be a valid shell command without special
+                                     characters or unsafe patterns.
+        """
         logger.info("Configuring rundeck user")
         # Ensure the user exists
-        os.system("sudo useradd -m -s /bin/bash rundeck || true")
+        subprocess.run(["sudo", "useradd", "-m", "-s", "/bin/bash", "rundeck"], check=False)
         logger.debug("rundeck user ensured")
 
         # Configure SSH key
@@ -69,42 +79,58 @@ class RundeckAccessCharm(CharmBase):
         auth_keys_file = os.path.join(ssh_dir, "authorized_keys")
         os.makedirs(ssh_dir, exist_ok=True)
         logger.debug(f"Created SSH directory: {ssh_dir}")
-        with open(auth_keys_file, "w") as f:
+        with open(auth_keys_file, "w", encoding="utf-8") as f:
             f.write(f"{ssh_key}\n")
         os.chmod(auth_keys_file, 0o600)
-        os.system(f"sudo chown -R rundeck:rundeck {ssh_dir}")
+        subprocess.run(["sudo", "chown", "-R", "rundeck:rundeck", ssh_dir], check=False)
         logger.info("SSH key configured for rundeck user")
 
         # Configure sudoers file
-        temp_file = "/tmp/sudoers-rundeck"
         sudoers_file = "/etc/sudoers.d/rundeck"
-        if sudoer:
-            if not self._verify_sudoers(sudoer):
-                self.unit.status = BlockedStatus("Sudoers file syntax error")
-                return
+        if allowed_commands:
+            sudoers = self._prepare_sudoers_contents(self._sanitize_commands(allowed_commands))
+            if not self._verify_sudoers(sudoers):
+                raise ValueError("Sudoers config syntax error")
             logger.debug("Configuring sudoers file")
             with open(sudoers_file, "w") as f:
-                f.write(f"rundeck {sudoer}\n")
+                f.write(sudoers)
+            os.chmod(sudoers_file, 0o440)
             logger.info("Sudoers file configured")
         elif os.path.exists(sudoers_file):
             logger.debug("Removing sudoers file")
             os.remove(sudoers_file)
             logger.info("Sudoers file removed")
 
-    def _verify_sudoers(self, sudoer) -> bool:
+    def _verify_sudoers(self, sudoers) -> bool:
         """Verify the sudoers file syntax."""
-        temp_file = "/tmp/sudoers-rundeck"
         logger.debug("Verifying sudoers file syntax")
-        with open(temp_file, "w") as f:
-            f.write(f"rundeck {sudoer}\n")
-        result = os.system(f"visudo --check -f {temp_file}")
-        os.remove(temp_file)
-        logger.debug("Sudoers file syntax verification completed")
-        if result != 0:
-            logger.error("Sudoers file syntax error")
+        try:
+            subprocess.run(
+                ["visudo", "--check"],
+                input=sudoers,
+                text=True,
+                capture_output=True,
+                check=True,
+            )
+            logger.debug("Sudoers file syntax is valid")
+            return True
+        except subprocess.CalledProcessError as e:
+            logger.error(f"Sudoers file syntax error: {e.stderr}")
             return False
-        logger.debug("Sudoers file syntax is valid")
-        return True
+
+    def _sanitize_commands(self, commands: list) -> str:
+        """Sanitize commands before adding to sudoers."""
+        logger.debug("Sanitizing commands for sudoers")
+        sanitized_commands = [re.escape(command) for command in commands]
+        sanitized_commands = ", \\\n".join(sanitized_commands)
+        return sanitized_commands
+
+    def _prepare_sudoers_contents(self, commands: str) -> str:
+        """Prepare the sudoers file contents."""
+        return (
+            f"Cmnd_Alias RUNDECK_CMDS = \\\n{commands}\nrundeck ALL=(ALL) NOPASSWD: RUNDECK_CMDS\n"
+        )
+
 
 if __name__ == "__main__":  # pragma: nocover
     main(RundeckAccessCharm)

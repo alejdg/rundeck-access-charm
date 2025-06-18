@@ -39,9 +39,9 @@ config:
       description: |
         SSH public key to configure for the 'rundeck' user.
       type: string
-    sudoer:
-      default: ""
+    allowed-commands:
+      type: list
+      default: []
       description: |
-        Sudo permissions for the 'rundeck' user. Define commands as a string.
-        Example: ALL=(ALL) NOPASSWD:ALL for full access.
-      type: string
+        List of commands to add to the sudoers file for the 'rundeck' user.
+        Example: ["/usr/bin/uptime", "/usr/bin/top -bn1", "/usr/bin/systemctl restart <service>"]

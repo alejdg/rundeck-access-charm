@@ -26,7 +26,6 @@ class TestRundeckAccessCharm(unittest.TestCase):
         self.harness = Harness(RundeckAccessCharm, config=config_yaml)
         self.harness.set_model_name("testing")
         self.harness.begin()
-        print("Available config options:", list(self.harness.charm.config.keys()))
 
         # Set up config options
         self.harness.update_config({"ssh-key": "", "sudoer": ""})
@@ -57,31 +56,47 @@ class TestRundeckAccessCharm(unittest.TestCase):
         for key in invalid_keys:
             self.assertFalse(self.harness.charm._validate_ssh_key(key))
 
-    @patch("os.system")
+    @patch("subprocess.run")
     @patch("os.chmod")
     @patch("os.makedirs")
     @patch("builtins.open", new_callable=mock_open)
     def test_configure_rundeck_user_with_sudo(
-        self, mock_file, mock_makedirs, mock_chmod, mock_system
+        self, mock_file, mock_makedirs, mock_chmod, mock_run
     ):
         """Test rundeck user configuration with sudo privileges."""
         ssh_key = "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQC2 user@host"
-        sudoer = "ALL=(ALL) NOPASSWD:ALL"
+        allowed_commands = [
+            "/usr/bin/uptime",
+            "/usr/bin/top -bn1",
+            "/usr/bin/systemctl restart <service>",
+        ]
 
-        self.harness.charm._configure_rundeck_user(ssh_key, sudoer)
+        # Patch _sanitize_commands and _prepare_sudoers_contents for predictable output
+        with patch.object(self.harness.charm, "_sanitize_commands", return_value="cmd1, cmd2"), \
+             patch.object(self.harness.charm, "_prepare_sudoers_contents", return_value="sudoers-content"), \
+             patch.object(self.harness.charm, "_verify_sudoers", return_value=True):
 
-        # Assert system calls were made correctly
-        mock_system.assert_any_call("sudo useradd -m -s /bin/bash rundeck || true")
-        mock_makedirs.assert_called_with("/home/rundeck/.ssh", exist_ok=True)
-        mock_file.assert_any_call("/home/rundeck/.ssh/authorized_keys", "w")
-        mock_file.assert_any_call("/etc/sudoers.d/rundeck", "w")
-        mock_chmod.assert_called_with("/home/rundeck/.ssh/authorized_keys", 0o600)
+            self.harness.charm._configure_rundeck_user(ssh_key, allowed_commands)
 
-        # Check file content
-        mock_file().write.assert_any_call(f"{ssh_key}\n")
-        mock_file().write.assert_any_call(f"rundeck {sudoer}\n")
+            # Assert subprocess.run was called for useradd and chown
+            mock_run.assert_any_call(
+                ["sudo", "useradd", "-m", "-s", "/bin/bash", "rundeck"], check=False
+            )
+            mock_run.assert_any_call(
+                ["sudo", "chown", "-R", "rundeck:rundeck", "/home/rundeck/.ssh"], check=False
+            )
 
-    @patch("os.system")
+            mock_makedirs.assert_called_with("/home/rundeck/.ssh", exist_ok=True)
+            mock_file.assert_any_call("/home/rundeck/.ssh/authorized_keys", "w", encoding="utf-8")
+            mock_file.assert_any_call("/etc/sudoers.d/rundeck", "w")
+            mock_chmod.assert_any_call("/home/rundeck/.ssh/authorized_keys", 0o600)
+            mock_chmod.assert_any_call("/etc/sudoers.d/rundeck", 0o440)
+
+            # Check file content
+            mock_file().write.assert_any_call(f"{ssh_key}\n")
+            mock_file().write.assert_any_call("sudoers-content")
+
+    @patch("subprocess.run")
     @patch("os.chmod")
     @patch("os.makedirs")
     @patch("os.path.exists")
@@ -94,17 +109,28 @@ class TestRundeckAccessCharm(unittest.TestCase):
         mock_exists,
         mock_makedirs,
         mock_chmod,
-        mock_system,
+        mock_run,
     ):
         """Test rundeck user configuration without sudo privileges."""
         ssh_key = "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQC2 user@host"
-        sudoer = None
+        allowed_commands = None
         mock_exists.return_value = True
 
-        self.harness.charm._configure_rundeck_user(ssh_key, sudoer)
+        self.harness.charm._configure_rundeck_user(ssh_key, allowed_commands)
 
-        # Assert system calls were made correctly
-        mock_system.assert_any_call("sudo useradd -m -s /bin/bash rundeck || true")
+        # Assert subprocess.run was called for useradd and chown
+        mock_run.assert_any_call(
+            ["sudo", "useradd", "-m", "-s", "/bin/bash", "rundeck"], check=False
+        )
+        mock_run.assert_any_call(
+            ["sudo", "chown", "-R", "rundeck:rundeck", "/home/rundeck/.ssh"], check=False
+        )
+
+        mock_makedirs.assert_called_with("/home/rundeck/.ssh", exist_ok=True)
+        mock_file.assert_any_call("/home/rundeck/.ssh/authorized_keys", "w", encoding="utf-8")
+        mock_chmod.assert_any_call("/home/rundeck/.ssh/authorized_keys", 0o600)
+
+        # Sudoers file should be removed
         mock_remove.assert_called_with("/etc/sudoers.d/rundeck")
         mock_file().write.assert_called_with(f"{ssh_key}\n")
 
@@ -137,7 +163,7 @@ class TestRundeckAccessCharm(unittest.TestCase):
     @patch("charm.RundeckAccessCharm._configure_rundeck_user")
     def test_config_changed_with_exception(self, mock_configure):
         """Test config-changed event with exception during configuration."""
-        mock_configure.side_effect = Exception("Test exception")
+        mock_configure.side_effect = RuntimeError("Test exception")
         self.harness.update_config(
             {
                 "ssh-key": "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQC2 user@host",

@@ -40,8 +40,8 @@ config:
         SSH public key to configure for the 'rundeck' user.
       type: string
     allowed-commands:
-      type: list
-      default: []
+      type: string
+      default: "[]"
       description: |
-        List of commands to add to the sudoers file for the 'rundeck' user.
-        Example: ["/usr/bin/uptime", "/usr/bin/top -bn1", "/usr/bin/systemctl restart <service>"]
+        JSON array of commands to add to the sudoers file for the 'rundeck' user.
+        Example: ["usr/bin/uptime", "/usr/bin/top -bn1", "/usr/bin/systemctl restart <service>"]

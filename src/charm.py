@@ -4,6 +4,7 @@
 
 """Charm the application."""
 
+import json
 import logging
 import os
 import re
@@ -32,7 +33,14 @@ class RundeckAccessCharm(CharmBase):
     def _on_config_changed(self, event: ConfigChangedEvent):
         logger.info("Configuration change detected")
         ssh_key = self.config.get("ssh-key")
-        allowed_commands = self.config.get("allowed-commands", [])
+        allowed_commands = self.config.get("allowed-commands") or "[]"
+        try:
+            # allowed_commands = json.loads(self.config.get("allowed-commands", "[]"))
+            allowed_commands = json.loads(allowed_commands)
+        except json.JSONDecodeError as e:
+            logger.error(f"Failed to parse allowed commands config: {allowed_commands} - Error: {e}")
+            self.unit.status = BlockedStatus("Invalid allowed commands format")
+            return
 
         if not ssh_key or not self._validate_ssh_key(ssh_key):
             logger.error("Invalid or missing SSH key")
@@ -121,8 +129,7 @@ class RundeckAccessCharm(CharmBase):
     def _sanitize_commands(self, commands: list) -> str:
         """Sanitize commands before adding to sudoers."""
         logger.debug("Sanitizing commands for sudoers")
-        sanitized_commands = [re.escape(command) for command in commands]
-        sanitized_commands = ", \\\n".join(sanitized_commands)
+        sanitized_commands = ", \\\n".join(commands)
         return sanitized_commands
 
     def _prepare_sudoers_contents(self, commands: str) -> str:

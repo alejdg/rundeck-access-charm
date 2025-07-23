@@ -8,12 +8,18 @@ import subprocess
 import pytest
 import pytest_asyncio
 from pytest_operator.plugin import OpsTest
+import json
 
 logger = logging.getLogger(__name__)
 
 # Test configurations
 TEST_SSH_KEY = "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQC2 test-user@host"
-TEST_SUDOER = "ALL=(ALL) NOPASSWD:ALL"
+TEST_ALLOWED_COMMANDS_LIST = [
+    "/usr/bin/uptime",
+    "/usr/bin/top -bn1",
+    "/usr/bin/systemctl restart something",
+]
+TEST_ALLOWED_COMMANDS = json.dumps(TEST_ALLOWED_COMMANDS_LIST)
 CHARM_NAME = "rundeck-access"
 PRINCIPAL_APP = "ubuntu"
 PRINCIPAL_SERIES = "focal"  # 20.04
@@ -32,10 +38,13 @@ async def deploy_charms(ops_test: OpsTest):
     await ops_test.model.wait_for_idle(status="active", timeout=1000)
 
     # Deploy subordinate with configuration
+    logger.info(f"Deploying {CHARM_NAME} with SSH key and allowed commands")
+    logger.info(f"Allowed commands: {TEST_ALLOWED_COMMANDS}")
+    logger.info(TEST_ALLOWED_COMMANDS)
     await ops_test.model.deploy(
         charm_path,
         application_name=CHARM_NAME,
-        config={"ssh-key": TEST_SSH_KEY, "sudoer": TEST_SUDOER},
+        config={"ssh-key": TEST_SSH_KEY, "allowed-commands": TEST_ALLOWED_COMMANDS},
         num_units=0,
     )
 
@@ -89,11 +98,11 @@ class TestRundeckAccessCharm:
             "--model",
             ops_test.model_name,
             principal_unit,
-            "sudo ls -la /home/rundeck/.ssh/authorized_keys",
+            "sudo stat -c '%a' /home/rundeck/.ssh/authorized_keys",
         ]
         result = subprocess.run(cmd, capture_output=True, text=True)
         assert result.returncode == 0, "Could not check file permissions"
-        assert "-rw-------" in result.stdout, "SSH key file has incorrect permissions"
+        assert "600" in result.stdout, "SSH key file has incorrect permissions"
 
         # Check sudoers configuration
         cmd = [
@@ -106,7 +115,11 @@ class TestRundeckAccessCharm:
         ]
         result = subprocess.run(cmd, capture_output=True, text=True)
         assert result.returncode == 0, "Could not read sudoers file"
-        assert f"rundeck {TEST_SUDOER}" in result.stdout, "Sudoers not properly configured"
+        # Check for Cmnd_Alias and rundeck ALL line
+        assert "Cmnd_Alias RUNDECK_CMDS" in result.stdout, "Sudoers missing Cmnd_Alias"
+        assert "rundeck ALL=(ALL) NOPASSWD: RUNDECK_CMDS" in result.stdout, "Sudoers not properly configured"
+        for cmd_str in TEST_ALLOWED_COMMANDS:
+            assert cmd_str in result.stdout, f"Allowed command {cmd_str} missing from sudoers"
 
     @pytest.mark.asyncio
     async def test_update_configuration(self, ops_test: OpsTest, deploy_charms):
@@ -117,13 +130,11 @@ class TestRundeckAccessCharm:
         status = await ops_test.model.get_status()
         assert CHARM_NAME in status.applications, f"Application {CHARM_NAME} not found in model"
 
-        # Update with new SSH key and remove sudo
+        # Update with new SSH key and remove allowed commands
         updated_ssh_key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI updated-user@host"
         await ops_test.model.applications[CHARM_NAME].set_config(
-            {"ssh-key": updated_ssh_key, "sudoer": ""}
+            {"ssh-key": updated_ssh_key, "allowed-commands": ""}
         )
-
-        # Wait for idle
         await ops_test.model.wait_for_idle(status="active", timeout=1000)
 
         # Verify SSH key was updated - use subprocess
@@ -146,10 +157,10 @@ class TestRundeckAccessCharm:
             "--model",
             ops_test.model_name,
             principal_unit,
-            "sudo ls -la /etc/sudoers.d/rundeck || echo 'File removed'",
+            "if [ -f /etc/sudoers.d/rundeck ]; then echo 'exists'; else echo 'removed'; fi",
         ]
         result = subprocess.run(cmd, capture_output=True, text=True)
-        assert "File removed" in result.stdout, "Sudoers file was not removed"
+        assert "removed" in result.stdout, "Sudoers file was not removed"
 
     @pytest.mark.asyncio
     async def test_invalid_configuration(self, ops_test: OpsTest):
@@ -160,13 +171,9 @@ class TestRundeckAccessCharm:
 
         # Set invalid SSH key
         await ops_test.model.applications[CHARM_NAME].set_config(
-            {
-                "ssh-key": "invalid-ssh-key",
-            }
+            {"ssh-key": "invalid-ssh-key"}
         )
-
-        # Charm should go to blocked status
-        await ops_test.model.wait_for_idle(status="blocked", timeout=1000)
+        await ops_test.model.wait_for_idle(status="blocked", timeout=60)
 
         # Verify the status message
         status = await ops_test.model.get_status()
@@ -178,22 +185,21 @@ class TestRundeckAccessCharm:
         )
 
         # Reset to valid configuration
+        logger.info("Resetting configuration to valid state")
         await ops_test.model.applications[CHARM_NAME].set_config(
-            {
-                "ssh-key": TEST_SSH_KEY,
-            }
+            {"ssh-key": TEST_SSH_KEY, "allowed-commands": TEST_ALLOWED_COMMANDS}
         )
-
-        # Wait for active status
-        await ops_test.model.wait_for_idle(status="active", timeout=1000)
+        await ops_test.model.wait_for_idle(status="active", timeout=60)
+        logger.info("test_invalid_configuration completed successfully")
 
     @pytest.mark.asyncio
     async def test_rundeck_user_functionality(self, ops_test: OpsTest, deploy_charms):
         """Test that the rundeck user can perform expected operations."""
         principal_unit = deploy_charms
 
+        logger.info("Testing rundeck user functionality")
         # Create a test file as the rundeck user to verify sudo works
-        if TEST_SUDOER:  # Only test if sudo was configured
+        if TEST_ALLOWED_COMMANDS:  # Only test if sudo was configured
             cmd = [
                 "juju",
                 "ssh",

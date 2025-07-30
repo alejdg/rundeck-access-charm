@@ -118,7 +118,7 @@ class TestRundeckAccessCharm:
         # Check for Cmnd_Alias and rundeck ALL line
         assert "Cmnd_Alias RUNDECK_CMDS" in result.stdout, "Sudoers missing Cmnd_Alias"
         assert "rundeck ALL=(ALL) NOPASSWD: RUNDECK_CMDS" in result.stdout, "Sudoers not properly configured"
-        for cmd_str in TEST_ALLOWED_COMMANDS:
+        for cmd_str in json.loads(TEST_ALLOWED_COMMANDS):
             assert cmd_str in result.stdout, f"Allowed command {cmd_str} missing from sudoers"
 
     @pytest.mark.asyncio
@@ -173,14 +173,16 @@ class TestRundeckAccessCharm:
         await ops_test.model.applications[CHARM_NAME].set_config(
             {"ssh-key": "invalid-ssh-key"}
         )
-        await ops_test.model.wait_for_idle(status="blocked", timeout=60)
+        await ops_test.model.wait_for_idle(status="blocked", timeout=60, apps=[CHARM_NAME])
 
         # Verify the status message
         status = await ops_test.model.get_status()
-        assert status.applications[CHARM_NAME].status == "blocked", (
+        logger.info(f"Current status: {status.applications[CHARM_NAME].status.status}")
+        logger.info(f"Current status: {status.applications[CHARM_NAME]}")
+        assert status.applications[CHARM_NAME].status.status == "blocked", (
             "Charm status should be blocked"
         )
-        assert "Invalid or missing SSH key" in status.applications[CHARM_NAME].status_message, (
+        assert "Invalid or missing SSH key" in status.applications[CHARM_NAME].status.info, (
             "Charm did not block with invalid SSH key"
         )
 

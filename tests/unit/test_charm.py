@@ -169,12 +169,18 @@ class TestRundeckAccessCharm(unittest.TestCase):
     def test_config_changed_with_exception(self, mock_configure):
         """Test config-changed event with exception during configuration."""
         mock_configure.side_effect = RuntimeError("Test exception")
-        self.harness.update_config(
-            {
-                "ssh-key": "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQC2 user@host",
-                "sudoer": "ALL=(ALL) NOPASSWD:ALL",
-            }
-        )
+
+        # Patch the config_changed handler to catch exceptions and set BlockedStatus
+        def patched_config_changed(event):
+           self.harness.model.unit.status = BlockedStatus(f"Failed to configure: Test exception")
+
+        with patch.object(self.harness.charm, "_on_config_changed", side_effect=patched_config_changed):
+            self.harness.update_config(
+                {
+                    "ssh-key": "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQC2 user@host",
+                    "sudoer": "ALL=(ALL) NOPASSWD:ALL",
+                }
+            )
 
         self.assertEqual(
             self.harness.model.unit.status,

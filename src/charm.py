@@ -49,11 +49,23 @@ class RundeckAccessCharm(CharmBase):
 
         try:
             self._configure_rundeck_user(ssh_key, allowed_commands)
-            self.unit.status = ActiveStatus("Configuration applied successfully")
-            logger.info("Configuration applied successfully")
         except Exception as e:
-            logger.error("Failed to configure user during configuration step")
-            self.unit.status = BlockedStatus(f"Failed to configure: {e}")
+            logger.error(f"Failed to configure user. Details: {e}")
+            self.unit.status = BlockedStatus(f"Failed to configure user")
+
+        try:
+            self._configure_sudoers(allowed_commands)
+        except Exception as e:
+            logger.error(f"Failed to configure sudoers file. Details: {e}")
+            self.unit.status = BlockedStatus(f"Failed to configure sudoers file")
+
+        # If nothing fails, set the unit status to Active
+        self.unit.status = ActiveStatus("Configuration applied successfully")
+        logger.info("Configuration applied successfully")
+
+    @property
+    def rundeck_user(self):
+        return f"rundeck-{self.app.name}"
 
     def _validate_ssh_key(self, key: str) -> bool:
         """Validate the SSH key format."""
@@ -66,7 +78,7 @@ class RundeckAccessCharm(CharmBase):
             logger.error("SSH key format is invalid")
         return valid
 
-    def _configure_rundeck_user(self, ssh_key, allowed_commands):
+    def _configure_rundeck_user(self, ssh_key: str):
         """Configure the rundeck user, its SSH key, and sudo access.
 
         Args:
@@ -77,29 +89,30 @@ class RundeckAccessCharm(CharmBase):
                                      Each command should be a valid shell command without special
                                      characters or unsafe patterns.
         """
-        user = "rundeck-" + self.app.name
-        if self._check_rundeck_user(user):
+        if self._check_rundeck_user():
             logger.debug("Rundeck user already exists")
             return
 
         logger.info("Configuring rundeck user")
         # Ensure the user exists
-        subprocess.run(["sudo", "useradd", "-m", "-s", "/bin/bash", user], check=False)
-        logger.debug(f"{user} user ensured")
+        subprocess.run(["sudo", "useradd", "-m", "-s", "/bin/bash", self.rundeck_user], check=False)
+        logger.debug(f"{self.rundeck_user} user ensured")
 
         # Configure SSH key
-        ssh_dir = f"/home/{user}/.ssh"
+        ssh_dir = f"/home/{self.rundeck_user}/.ssh"
         auth_keys_file = os.path.join(ssh_dir, "authorized_keys")
         os.makedirs(ssh_dir, exist_ok=True)
         logger.debug(f"Created SSH directory: {ssh_dir}")
         with open(auth_keys_file, "w", encoding="utf-8") as f:
             f.write(f"{ssh_key}\n")
         os.chmod(auth_keys_file, 0o600)
-        subprocess.run(["sudo", "chown", "-R", f"{user}:{user}", ssh_dir], check=False)
-        logger.info(f"SSH key configured for {user} user")
+        subprocess.run(["sudo", "chown", "-R", f"{self.rundeck_user}:{self.rundeck_user}", ssh_dir], check=False)
+        logger.info(f"SSH key configured for {self.rundeck_user} user")
 
-        # Configure sudoers file
-        sudoers_file = f"/etc/sudoers.d/{user}"
+
+    def _configure_sudoers(self, allowed_commands: list):
+        """Configure the sudoers file for the rundeck user."""
+        sudoers_file = f"/etc/sudoers.d/{self.rundeck_user}"
         if allowed_commands:
             sudoers = self._prepare_sudoers_contents(self._sanitize_commands(allowed_commands))
             if not self._verify_sudoers(sudoers):
@@ -114,14 +127,14 @@ class RundeckAccessCharm(CharmBase):
             os.remove(sudoers_file)
             logger.info("Sudoers file removed")
 
-    def _check_rundeck_user(self, user) -> bool:
+    def _check_rundeck_user(self) -> bool:
         """Check if the rundeck user exists."""
         try:
-            subprocess.run(["id", user], check=True, capture_output=True)
-            logger.debug(f"User {user} exists")
+            subprocess.run(["id", self.rundeck_user], check=True, capture_output=True)
+            logger.debug(f"User {self.rundeck_user} exists")
             return True
         except subprocess.CalledProcessError:
-            logger.debug(f"User {user} does not exist")
+            logger.debug(f"User {self.rundeck_user} does not exist")
             return False
 
     def _verify_sudoers(self, sudoers) -> bool:

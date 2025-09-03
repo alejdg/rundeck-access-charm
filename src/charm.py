@@ -25,6 +25,7 @@ class RundeckAccessCharm(CharmBase):
         super().__init__(framework)
         framework.observe(self.on.start, self._on_start)
         framework.observe(self.on.config_changed, self._on_config_changed)
+        framework.observe(self.on.stop, self._on_stop)
 
     def _on_start(self, event: StartEvent):
         """Handle start event."""
@@ -35,7 +36,6 @@ class RundeckAccessCharm(CharmBase):
         ssh_key = self.config.get("ssh-key")
         allowed_commands = self.config.get("allowed-commands") or "[]"
         try:
-            # allowed_commands = json.loads(self.config.get("allowed-commands", "[]"))
             allowed_commands = json.loads(allowed_commands)
         except json.JSONDecodeError as e:
             logger.error(f"Failed to parse allowed commands config: {allowed_commands} - Error: {e}")
@@ -48,7 +48,7 @@ class RundeckAccessCharm(CharmBase):
             return
 
         try:
-            self._configure_rundeck_user(ssh_key, allowed_commands)
+            self._configure_rundeck_user(ssh_key)
         except Exception as e:
             logger.error(f"Failed to configure user. Details: {e}")
             self.unit.status = BlockedStatus(f"Failed to configure user")
@@ -62,6 +62,20 @@ class RundeckAccessCharm(CharmBase):
         # If nothing fails, set the unit status to Active
         self.unit.status = ActiveStatus("Configuration applied successfully")
         logger.info("Configuration applied successfully")
+
+    def _on_stop(self, event):
+        """Handle stop event."""
+        logger.info("Charm is stopping. Cleaning up.")
+        # Make sure the user is removed
+        if self._check_rundeck_user():
+            subprocess.run(["sudo", "userdel", "-r", self.rundeck_user], check=False)
+            logger.info(f"Removed user {self.rundeck_user}")
+        # Remove sudoers file if exists
+        sudoers_file = f"/etc/sudoers.d/{self.rundeck_user}"
+        if os.path.exists(sudoers_file):
+            os.remove(sudoers_file)
+            logger.info(f"Removed sudoers file {sudoers_file}")
+        self.unit.status = ActiveStatus("Charm stopped")
 
     @property
     def rundeck_user(self):

@@ -48,10 +48,16 @@ class RundeckAccessCharm(CharmBase):
             return
 
         try:
-            self._configure_rundeck_user(ssh_key)
+            self._configure_rundeck_user()
         except Exception as e:
             logger.error(f"Failed to configure user. Details: {e}")
             self.unit.status = BlockedStatus(f"Failed to configure user")
+
+        try:
+            self._configure_ssh_key(ssh_key)
+        except Exception as e:
+            logger.error(f"Failed to configure ssh key. Details: {e}")
+            self.unit.status = BlockedStatus(f"Failed to configure ssh key")
 
         try:
             self._configure_sudoers(allowed_commands)
@@ -92,17 +98,8 @@ class RundeckAccessCharm(CharmBase):
             logger.error("SSH key format is invalid")
         return valid
 
-    def _configure_rundeck_user(self, ssh_key: str):
-        """Configure the rundeck user, its SSH key, and sudo access.
-
-        Args:
-            ssh_key (str): The SSH public key to be added to the rundeck user's authorized_keys
-                           file.
-            allowed_commands (list): A list of strings representing commands that the rundeck user
-                                     is allowed to execute via sudo.
-                                     Each command should be a valid shell command without special
-                                     characters or unsafe patterns.
-        """
+    def _configure_rundeck_user(self):
+        """Configure the rundeck user, its SSH key, and sudo access."""
         if self._check_rundeck_user():
             logger.debug("Rundeck user already exists")
             return
@@ -112,6 +109,14 @@ class RundeckAccessCharm(CharmBase):
         subprocess.run(["sudo", "useradd", "-m", "-s", "/bin/bash", self.rundeck_user], check=False)
         logger.debug(f"{self.rundeck_user} user ensured")
 
+
+    def _configure_ssh_key(self, ssh_key: str):
+        """Configure the SSH key for the rundeck user.
+        Args:
+            ssh_key (str): The SSH public key to be added to the rundeck user's authorized_keys
+                           file.
+        """
+        logger.info("Configuring SSH key for rundeck user")
         # Configure SSH key
         ssh_dir = f"/home/{self.rundeck_user}/.ssh"
         auth_keys_file = os.path.join(ssh_dir, "authorized_keys")
@@ -125,7 +130,10 @@ class RundeckAccessCharm(CharmBase):
 
 
     def _configure_sudoers(self, allowed_commands: list):
-        """Configure the sudoers file for the rundeck user."""
+        """Configure the sudoers file for the rundeck user.
+        Args:
+            allowed_commands (list): List of commands to be allowed for the rundeck user.
+        """
         sudoers_file = f"/etc/sudoers.d/{self.rundeck_user}"
         if allowed_commands:
             sudoers = self._prepare_sudoers_contents(self._sanitize_commands(allowed_commands))
@@ -176,9 +184,10 @@ class RundeckAccessCharm(CharmBase):
 
     def _prepare_sudoers_contents(self, commands: str) -> str:
         """Prepare the sudoers file contents."""
-
+        alias_name = f"RUNDECK_CMDS_{self.app.name.upper().replace('-', '_')}"
         return (
-            f"Cmnd_Alias RUNDECK_CMDS_{self.app.name.upper()} = \\\n{commands}\nrundeck ALL=(ALL) NOPASSWD: RUNDECK_CMDS_{self.app.name.upper()}\n"
+            f"Cmnd_Alias {alias_name} = \\\n{commands}\n"
+            f"{self.rundeck_user} ALL=(ALL) NOPASSWD: {alias_name}\n"
         )
 
 

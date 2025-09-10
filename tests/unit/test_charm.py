@@ -134,7 +134,8 @@ class TestRundeckAccessCharm(unittest.TestCase):
     def test_prepare_sudoers_contents(self):
         charm = self.harness.charm
         result = charm._prepare_sudoers_contents("cmd1, cmd2")
-        assert "Cmnd_Alias" in result and "rundeck ALL=(ALL)" in result
+        alias_name = f"RUNDECK_CMDS_{self.harness.charm.app.name.replace('-', '_')}"
+        assert "Cmnd_Alias" in result and f"{charm.rundeck_user} ALL=(ALL)" in result
 
     def test_on_config_changed_invalid_json(self):
         """Test config-changed event with invalid allowed-commands JSON."""
@@ -198,7 +199,8 @@ class TestRundeckAccessCharm(unittest.TestCase):
     ):
         charm = self.harness.charm
         with patch.object(charm, "_check_rundeck_user", return_value=False):
-            charm._configure_rundeck_user("ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQC2 user@host")
+            charm._configure_rundeck_user()
+            charm._configure_ssh_key("ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQC2 user@host")
             mock_run.assert_any_call(
                 ["sudo", "useradd", "-m", "-s", "/bin/bash", charm.rundeck_user], check=False
             )
@@ -209,9 +211,29 @@ class TestRundeckAccessCharm(unittest.TestCase):
                 ["sudo", "chown", "-R", f"{charm.rundeck_user}:{charm.rundeck_user}", f"/home/{charm.rundeck_user}/.ssh"], check=False
             )
 
-    def test_configure_rundeck_user_user_exists(self):
+    @patch("subprocess.run")
+    @patch("os.path.exists")
+    @patch("os.remove")
+    def test_on_stop_removes_user_and_sudoers(self, mock_remove, mock_exists, mock_run):
         charm = self.harness.charm
+        # User exists, sudoers file exists
         with patch.object(charm, "_check_rundeck_user", return_value=True):
-            charm._configure_rundeck_user("ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQC2 user@host")
-            # Should return early, no system calls
+            mock_exists.return_value = True
+            charm._on_stop(None)
+            mock_run.assert_any_call(["sudo", "userdel", "-r", charm.rundeck_user], check=False)
+            mock_remove.assert_called_once_with(f"/etc/sudoers.d/{charm.rundeck_user}")
+            self.assertEqual(self.harness.model.unit.status, ActiveStatus("Charm stopped"))
+
+    @patch("subprocess.run")
+    @patch("os.path.exists")
+    @patch("os.remove")
+    def test_on_stop_no_user_no_sudoers(self, mock_remove, mock_exists, mock_run):
+        charm = self.harness.charm
+        # User does not exist, sudoers file does not exist
+        with patch.object(charm, "_check_rundeck_user", return_value=False):
+            mock_exists.return_value = False
+            charm._on_stop(None)
+            mock_run.assert_not_called()
+            mock_remove.assert_not_called()
+            self.assertEqual(self.harness.model.unit.status, ActiveStatus("Charm stopped"))
 

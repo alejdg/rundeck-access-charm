@@ -73,7 +73,7 @@ class TestRundeckAccessCharm:
             "--model",
             ops_test.model_name,
             principal_unit,
-            "id rundeck",
+            f"id rundeck-{CHARM_NAME}",
         ]
         result = subprocess.run(cmd, capture_output=True, text=True)
         assert result.returncode == 0, "Rundeck user was not created"
@@ -85,7 +85,7 @@ class TestRundeckAccessCharm:
             "--model",
             ops_test.model_name,
             principal_unit,
-            "sudo cat /home/rundeck/.ssh/authorized_keys",
+            f"sudo cat /home/rundeck-{CHARM_NAME}/.ssh/authorized_keys",
         ]
         result = subprocess.run(cmd, capture_output=True, text=True)
         assert result.returncode == 0, "Could not read authorized_keys file"
@@ -98,7 +98,7 @@ class TestRundeckAccessCharm:
             "--model",
             ops_test.model_name,
             principal_unit,
-            "sudo stat -c '%a' /home/rundeck/.ssh/authorized_keys",
+            f"sudo stat -c '%a' /home/rundeck-{CHARM_NAME}/.ssh/authorized_keys",
         ]
         result = subprocess.run(cmd, capture_output=True, text=True)
         assert result.returncode == 0, "Could not check file permissions"
@@ -111,13 +111,14 @@ class TestRundeckAccessCharm:
             "--model",
             ops_test.model_name,
             principal_unit,
-            "sudo cat /etc/sudoers.d/rundeck",
+            f"sudo cat /etc/sudoers.d/rundeck-{CHARM_NAME}",
         ]
         result = subprocess.run(cmd, capture_output=True, text=True)
         assert result.returncode == 0, "Could not read sudoers file"
         # Check for Cmnd_Alias and rundeck ALL line
-        assert "Cmnd_Alias RUNDECK_CMDS" in result.stdout, "Sudoers missing Cmnd_Alias"
-        assert "rundeck ALL=(ALL) NOPASSWD: RUNDECK_CMDS" in result.stdout, "Sudoers not properly configured"
+        cmd_alias = f"RUNDECK_CMDS_{CHARM_NAME.upper().replace('-', '_')}"
+        assert f"Cmnd_Alias {cmd_alias}" in result.stdout, "Sudoers missing Cmnd_Alias"
+        assert f"rundeck-{CHARM_NAME} ALL=(ALL) NOPASSWD: {cmd_alias}" in result.stdout, "Sudoers not properly configured"
         for cmd_str in json.loads(TEST_ALLOWED_COMMANDS):
             assert cmd_str in result.stdout, f"Allowed command {cmd_str} missing from sudoers"
 
@@ -144,7 +145,7 @@ class TestRundeckAccessCharm:
             "--model",
             ops_test.model_name,
             principal_unit,
-            "sudo cat /home/rundeck/.ssh/authorized_keys",
+            f"sudo cat /home/rundeck-{CHARM_NAME}/.ssh/authorized_keys",
         ]
         result = subprocess.run(cmd, capture_output=True, text=True)
         assert result.returncode == 0, "Could not read updated authorized_keys file"
@@ -157,7 +158,7 @@ class TestRundeckAccessCharm:
             "--model",
             ops_test.model_name,
             principal_unit,
-            "if [ -f /etc/sudoers.d/rundeck ]; then echo 'exists'; else echo 'removed'; fi",
+            f"if [ -f /etc/sudoers.d/rundeck-{CHARM_NAME} ]; then echo 'exists'; else echo 'removed'; fi",
         ]
         result = subprocess.run(cmd, capture_output=True, text=True)
         assert "removed" in result.stdout, "Sudoers file was not removed"
@@ -208,7 +209,7 @@ class TestRundeckAccessCharm:
                 "--model",
                 ops_test.model_name,
                 principal_unit,
-                "sudo -u rundeck touch /tmp/rundeck_test_file && ls -la /tmp/rundeck_test_file",
+                f"sudo -u rundeck-{CHARM_NAME} touch /tmp/rundeck_test_file && ls -la /tmp/rundeck_test_file",
             ]
             result = subprocess.run(cmd, capture_output=True, text=True)
             assert result.returncode == 0, "Failed to create test file as rundeck user"
@@ -226,3 +227,36 @@ class TestRundeckAccessCharm:
             result = subprocess.run(cmd, capture_output=True, text=True)
             assert result.returncode == 0, "Could not check file ownership"
             assert "rundeck" in result.stdout, "File not owned by rundeck user"
+
+    @pytest.mark.asyncio
+    async def test_remove_relation_removes_user_and_sudoers(self, ops_test: OpsTest, deploy_charms):
+        """Test removing the relation cleans up the rundeck user and sudoers file."""
+        principal_unit = deploy_charms
+
+        # Remove the relation between principal and subordinate
+        ops_test.model.applications[PRINCIPAL_APP].remove_relation(CHARM_NAME, PRINCIPAL_APP)
+        await ops_test.model.wait_for_idle(status="active", timeout=1000)
+
+        # Check that the rundeck user is removed
+        cmd = [
+            "juju",
+            "ssh",
+            "--model",
+            ops_test.model_name,
+            principal_unit,
+            "id rundeck",
+        ]
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        assert result.returncode != 0, "Rundeck user was not removed"
+
+        # Check that the sudoers file is removed
+        cmd = [
+            "juju",
+            "ssh",
+            "--model",
+            ops_test.model_name,
+            principal_unit,
+            "test -f /etc/sudoers.d/rundeck && echo exists || echo removed",
+        ]
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        assert "removed" in result.stdout, "Sudoers file was not removed"

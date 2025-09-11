@@ -152,7 +152,8 @@ class RundeckAccessCharm(CharmBase):
     def _check_rundeck_user(self) -> bool:
         """Check if the rundeck user exists."""
         try:
-            subprocess.run(["id", self.rundeck_user], check=True, capture_output=True)
+            output = subprocess.run(["id", self.rundeck_user])
+            output.check_returncode()
             logger.debug(f"User {self.rundeck_user} exists")
             return True
         except subprocess.CalledProcessError:
@@ -163,13 +164,15 @@ class RundeckAccessCharm(CharmBase):
         """Verify the sudoers file syntax."""
         logger.debug("Verifying sudoers file syntax")
         try:
-            subprocess.run(
+            output = subprocess.run(
                 ["visudo", "--check"],
                 input=sudoers,
                 text=True,
-                capture_output=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
                 check=True,
             )
+            output.check_returncode()
             logger.debug("Sudoers file syntax is valid")
             return True
         except subprocess.CalledProcessError as e:
